@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"sync/atomic"
 	"time"
 )
 
@@ -32,7 +33,6 @@ func removeServerFromActiveList(server string) {
 func healthChecker() {
 	for {
 		currentTimestamp := time.Now().Unix()
-		fmt.Println(currentTimestamp)
 		if currentTimestamp%10 == 0 {
 			for i := 0; i < len(backendServers); i++ {
 				conn, err := net.Dial("tcp", backendServers[i])
@@ -58,15 +58,20 @@ func healthChecker() {
 }
 
 func main() {
-	count := 0
+	var counter int64 // Atomic counter variable of type int64
 
 	// Create a custom handler function
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		selectedServer := backendServers[count]
+		// Increment the counter atomically
+		atomic.AddInt64(&counter, 1)
+		if int(counter) == len(activeServers)+1 {
+			counter = 1
+		}
+		selectedServer := activeServers[counter-1]
 		fmt.Println("Forwarding request to backend server...", selectedServer)
 
 		// Set the addresses of the backend servers
-		backendURL, err := url.Parse(selectedServer)
+		backendURL, err := url.Parse("http://" + selectedServer)
 		if err != nil {
 			panic(err)
 		}
@@ -75,10 +80,7 @@ func main() {
 		proxy := httputil.NewSingleHostReverseProxy(backendURL)
 
 		proxy.ServeHTTP(w, r)
-		count += 1
-		if count == 2 {
-			count = 0
-		}
+
 	})
 
 	go healthChecker()
