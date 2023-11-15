@@ -6,12 +6,16 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"sync"
 	"sync/atomic"
 	"time"
 )
 
-var backendServers = []string{"localhost:3000", "localhost:4000", "localhost:5000", "localhost:6000"}
-var activeServers []string
+var (
+	backendServers = []string{"localhost:3000", "localhost:4000", "localhost:5000", "localhost:6000"}
+	activeServers  []string
+	proxyMap       sync.Map
+)
 
 func isServerInActiveList(server string) bool {
 	for i := 0; i < len(activeServers); i++ {
@@ -42,6 +46,7 @@ func healthChecker() {
 					}
 				} else {
 					removeServerFromActiveList(backendServers[i])
+					proxyMap.Delete(backendServers[i])
 				}
 				// Close the TCP connection after performing operations
 				if conn != nil {
@@ -55,6 +60,17 @@ func healthChecker() {
 		}
 		time.Sleep(1 * time.Second)
 	}
+}
+
+// Custom response writer to capture status code
+type responseRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *responseRecorder) WriteHeader(statusCode int) {
+	r.status = statusCode
+	r.ResponseWriter.WriteHeader(statusCode)
 }
 
 func main() {
@@ -76,11 +92,27 @@ func main() {
 			panic(err)
 		}
 
-		// Create reverse proxies for backend server
-		proxy := httputil.NewSingleHostReverseProxy(backendURL)
+		// Get or create reverse proxies for backend server
+		proxy, ok := proxyMap.Load(selectedServer)
+		if !ok {
+			backendProxy := httputil.NewSingleHostReverseProxy(backendURL)
+			proxyMap.Store(selectedServer, backendProxy)
+			proxy = backendProxy
+		}
 
-		proxy.ServeHTTP(w, r)
+		// Capture the start time
+		startTime := time.Now()
 
+		// Serve HTTP using the reverse proxy
+		recorder := &responseRecorder{ResponseWriter: w}
+		if backendProxy, ok := proxy.(*httputil.ReverseProxy); ok {
+			backendProxy.ServeHTTP(recorder, r)
+			// Calculate the duration taken
+			duration := time.Since(startTime)
+			fmt.Printf("Host: %s StatusCode: %d ResponseTime: %v\n", selectedServer, recorder.status, duration)
+		} else {
+			http.Error(w, "Failed to handle request", http.StatusInternalServerError)
+		}
 	})
 
 	go healthChecker()
